@@ -4,6 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/Tooboi/FilterMakerLite/releases/latest"><img src="https://img.shields.io/github/v/release/Tooboi/FilterMakerLite?label=release&color=ff8c1f&style=flat-square" alt="Latest release"></a>
+  <a href="https://extensions.blender.org/add-ons/filter-maker-lite/"><img src="https://img.shields.io/badge/Blender%20Extensions-get%20it-ea7600?logo=blender&logoColor=white&style=flat-square" alt="Get it on Blender Extensions"></a>
   <img src="https://img.shields.io/badge/price-free-3fb950?style=flat-square" alt="Free">
   <img src="https://img.shields.io/badge/Blender-4.2%2B-ea7600?logo=blender&logoColor=white&style=flat-square" alt="Blender 4.2+">
   <img src="https://img.shields.io/badge/tested%20on-Blender%205.2%20LTS-ea7600?logo=blender&logoColor=white&style=flat-square" alt="Tested on Blender 5.2 LTS">
@@ -59,6 +60,10 @@ Filters you make in Lite open in Pro with every setting intact, so you can upgra
 ## 📦 Installation
 
 **Requires Blender 4.2 LTS or newer** (tested on 5.2 LTS).
+
+**Easiest: from Blender Extensions.** In Blender, open *Edit → Preferences → Get Extensions*, search for **Filter Maker Lite** and click **Install**. Or open the [Filter Maker Lite page on Blender Extensions](https://extensions.blender.org/add-ons/filter-maker-lite/).
+
+**Or from GitHub:**
 
 1. Download `FilterMakerLite-x.y.z.zip` from the [latest release](https://github.com/Tooboi/FilterMakerLite/releases/latest). Don't unzip it.
 2. Drag it into Blender, or go to *Edit → Preferences → Get Extensions → ⌄ → Install from Disk…*
