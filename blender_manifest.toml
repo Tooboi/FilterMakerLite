@@ -6,7 +6,7 @@ name = "Filter Maker Lite"
 tagline = "Free pleated filter generator for lines, curves and faces"
 maintainer = "Tooboi"
 type = "add-on"
-website = "https://github.com/Tooboi/FilterMakerPro"
+website = "https://github.com/Tooboi/FilterMakerLite"
 
 tags = ["Modeling", "Mesh", "Object"]
 

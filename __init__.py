@@ -4,7 +4,7 @@ bl_info = {
     "version": (0, 6, 6),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar (N) > Filter Maker",
-    "description": "Free pleated filter generator: line, curve, edge and face sources, pleat shaping and a simple border. Filter Maker Pro adds wear, hair & dust, border styles, boolean and presets.",
+    "description": "Free pleated filter generator: line, curve, edge and face sources, pleat shaping, pleat bevel and a clean border.",
     "category": "Object",
 }
 
@@ -1923,7 +1923,7 @@ def _slab(src_bm, pad):
 
 def build_cutter(p, src):
     # Filter Maker Pro only (removed from the Lite build)
-    raise RuntimeError('This is a Filter Maker Pro feature.')
+    raise RuntimeError('Not available in Filter Maker Lite.')
 
 
 # ---------------------------------------------------------------------------
@@ -2430,7 +2430,7 @@ def _strand_points(rng, curl, kind, n=8):
     """One unit-length strand along +X (root at the origin) that lies flat: its bends
     stay in the local XY plane (the filter surface); Z only gets a slight wobble."""
     # Filter Maker Pro only (removed from the Lite build)
-    raise RuntimeError('This is a Filter Maker Pro feature.')
+    raise RuntimeError('Not available in Filter Maker Lite.')
 
 
 HAIR_TAPER = 0.18              # each end tapers over this share of the strand
@@ -2451,7 +2451,7 @@ def _build_hair_lib(coll, prm):
     """Unit-length strand curves without bevel. The scatter turns them into tubes of
     the filter's own Width, so the thickness never depends on the strand length."""
     # Filter Maker Pro only (removed from the Lite build)
-    raise RuntimeError('This is a Filter Maker Pro feature.')
+    raise RuntimeError('Not available in Filter Maker Lite.')
 
 
 DUST_KINDS = (('FLAKE', "Flakes", "Thin irregular flakes lying on the surface"),
@@ -2462,18 +2462,18 @@ DUST_KINDS = (('FLAKE', "Flakes", "Thin irregular flakes lying on the surface"),
 
 def _dust_mesh_piece(rng, kind, name):
     # Filter Maker Pro only (removed from the Lite build)
-    raise RuntimeError('This is a Filter Maker Pro feature.')
+    raise RuntimeError('Not available in Filter Maker Lite.')
 
 
 def _lint_curve(rng, name):
     """A short curly fibre lying along the surface (in the YZ plane, slightly raised)."""
     # Filter Maker Pro only (removed from the Lite build)
-    raise RuntimeError('This is a Filter Maker Pro feature.')
+    raise RuntimeError('Not available in Filter Maker Lite.')
 
 
 def _build_dust_lib(coll, prm):
     # Filter Maker Pro only (removed from the Lite build)
-    raise RuntimeError('This is a Filter Maker Pro feature.')
+    raise RuntimeError('Not available in Filter Maker Lite.')
 
 
 _KINDS = {
@@ -2488,7 +2488,7 @@ def _sync_lib(obj, p, kind):
     the values are copied to every other filter; otherwise the filter adopts the shared
     values."""
     # Filter Maker Pro only (removed from the Lite build)
-    raise RuntimeError('This is a Filter Maker Pro feature.')
+    raise RuntimeError('Not available in Filter Maker Lite.')
 
 
 # ---- emitter object and the two systems -----------------------------------
@@ -2602,19 +2602,19 @@ def _ng_sock(sockets, name, types=None):
 
 def _build_scatter(group, ctx):
     # Filter Maker Pro only (removed from the Lite build)
-    raise RuntimeError('This is a Filter Maker Pro feature.')
+    raise RuntimeError('Not available in Filter Maker Lite.')
 
 
 def _hair_tubes(N, L, math_node, val, geo, y):
     """Strand curves -> realized tubes of constant width that taper only at the tip
     (the curve radius stored in the strand library), independent of strand length."""
     # Filter Maker Pro only (removed from the Lite build)
-    raise RuntimeError('This is a Filter Maker Pro feature.')
+    raise RuntimeError('Not available in Filter Maker Lite.')
 
 
 def _scatter_group(emitter):
     # Filter Maker Pro only (removed from the Lite build)
-    raise RuntimeError('This is a Filter Maker Pro feature.')
+    raise RuntimeError('Not available in Filter Maker Lite.')
 
 
 SIDE_VALUE = {'FRONT': 1.0, 'BACK': -1.0, 'BOTH': 0.0}
@@ -3340,7 +3340,7 @@ def load_preset(ident):
 
 def save_preset(name, values):
     # Filter Maker Pro only (removed from the Lite build)
-    raise RuntimeError('This is a Filter Maker Pro feature.')
+    raise RuntimeError('Not available in Filter Maker Lite.')
 
 
 def preset_items(self, context):
@@ -4045,7 +4045,6 @@ class FILTER_PT_border(FILTER_SubPanel, Panel):
         layout.label(text="white = pleats   orange = border   grey = bounds")
         c = layout.column(align=True)
         c.prop(p, "border_width", text="Width")
-        c.label(text="Chamfer, Round and Lip profiles, overhang and front / back: Pro", icon=ic('LOCKED'))
         c.separator()
         c.label(text="Shading")
         c.prop(p, "border_smooth")
@@ -4623,35 +4622,7 @@ def _particle_footer(layout, p, coll, count, noun, kind):
 # Robust registration / reload cleanup
 # ---------------------------------------------------------------------------
 
-PRO_URL = 'https://github.com/Tooboi/FilterMakerPro'
-
-
-class FILTER_PT_pro(FILTER_SubPanel, Panel):
-    header_art = "finish"
-    header_icon = "FUND"
-    bl_label = "Filter Maker Pro"
-    bl_idname = "FILTER_PT_pro"
-    bl_options = {'DEFAULT_CLOSED'}
-
-    @classmethod
-    def poll(cls, context):
-        return True
-
-    @safe_draw
-    def draw(self, context):
-        layout = self.layout
-        col = layout.column(align=True)
-        for text, icon in (("Wear (Clouds displace)", 'MOD_DISPLACE'),
-                           ("Hair & dust, shared across filters", 'STRANDS'),
-                           ("Border profiles, overhang, front / back", 'MOD_SOLIDIFY'),
-                           ("Boolean cutter", 'MOD_BOOLEAN'),
-                           ("Presets: built-in and your own", 'PRESET')):
-            col.label(text=text, icon=ic(icon))
-        layout.operator("wm.url_open", text="Get Filter Maker Pro", icon=ic('URL')).url = PRO_URL
-        layout.label(text="Filters made in Lite open in Pro unchanged.", icon=ic('INFO'))
-
-
-classes = (FilterProps, FILTER_OT_new_line, FILTER_OT_from_selection, FILTER_OT_edit_source_curve, FILTER_OT_regenerate, FILTER_OT_finish, FILTER_OT_delete, FILTER_PT_main, FILTER_PT_pleats, FILTER_PT_bevel, FILTER_PT_shading, FILTER_PT_border, FILTER_PT_materials, FILTER_PT_actions, FILTER_PT_pro)
+classes = (FilterProps, FILTER_OT_new_line, FILTER_OT_from_selection, FILTER_OT_edit_source_curve, FILTER_OT_regenerate, FILTER_OT_finish, FILTER_OT_delete, FILTER_PT_main, FILTER_PT_pleats, FILTER_PT_bevel, FILTER_PT_shading, FILTER_PT_border, FILTER_PT_materials, FILTER_PT_actions)
 
 
 def _teardown():
