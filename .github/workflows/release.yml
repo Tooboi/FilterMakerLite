@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check versions match the tag
+        id: ver
+        run: |
+          BL=$(python3 - <<'PY'
+          import ast
+          src = open("__init__.py", encoding="utf-8").read()
+          tree = ast.parse(src)
+          for node in tree.body:
+              if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "bl_info":
+                  print(".".join(map(str, ast.literal_eval(node.value)["version"])))
+          PY
+          )
+          MF=$(grep -E '^version *=' blender_manifest.toml | sed -E 's/.*"(.*)".*/\1/')
+          echo "bl_info=$BL manifest=$MF ref=$GITHUB_REF_NAME"
+          if [ "$BL" != "$MF" ]; then echo "::error::bl_info ($BL) and manifest ($MF) differ"; exit 1; fi
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "v$BL" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match version v$BL"; exit 1
+          fi
+          echo "version=$BL" >> "$GITHUB_OUTPUT"
+
+      - name: Byte-compile check
+        run: python3 -m py_compile __init__.py
+
+      - name: Build zip
+        run: |
+          mkdir -p dist/FilterMakerLite
+          cp __init__.py blender_manifest.toml LICENSE dist/FilterMakerLite/
+          cd dist && zip -r "FilterMakerLite-${{ steps.ver.outputs.version }}.zip" FilterMakerLite
+
+      - name: Release notes (docs/releases/vX.Y.Z.md, else the CHANGELOG section)
+        run: |
+          if [ -f "docs/releases/v${{ steps.ver.outputs.version }}.md" ]; then
+            cp "docs/releases/v${{ steps.ver.outputs.version }}.md" dist/notes.md
+            exit 0
+          fi
+          awk -v v="${{ steps.ver.outputs.version }}" '
+            $0 ~ "^## \\[" v "\\]" {on=1; next}
+            on && /^## \[/ {exit}
+            on {print}' CHANGELOG.md > dist/notes.md
+          [ -s dist/notes.md ] || echo "See CHANGELOG.md" > dist/notes.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FilterMakerLite-${{ steps.ver.outputs.version }}
+          path: dist/*.zip
+
+      - name: Publish GitHub release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          body_path: dist/notes.md
