@@ -28,12 +28,22 @@
 - **Pleat bevel:** ridge and valley bevel with cuts, from sharp paper folds to soft rounded media.
 - **Clean topology:** face filters are remeshed on a structured quad grid with welded seams and smooth normals across panel joins. Triangles are one click away.
 - **A clean border:** a flat frame with the width you choose, sealed so the pleat ends never poke through.
+- **Boolean tool:** cut the source mesh with a box, an envelope of the pleated form or any object, so the filter sits in its housing. Applied when you finish.
+- **Real UVs:** the pleated sheet is unrolled across the folds, so textures keep their size on every flank and on the frame.
 - **Live editing:** change a slider and the filter rebuilds; curve sources stay editable.
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/images/bevels.png" alt="Sharp, bevelled and round pleats"></td>
-    <td width="50%"><img src="docs/images/topology.png" alt="Clean quad topology on an L-shaped fold"></td>
+    <td width="50%"><img src="docs/images/boolean.png" alt="A filter set into an inset pocket of a housing by the Boolean tool"></td>
+    <td width="50%"><img src="docs/images/cylinder.png" alt="A ring filter made from a closed curve"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub><b>Boolean.</b> The source mesh is cut so the filter sits in its housing</sub></td>
+    <td align="center"><sub><b>Curve mode.</b> A closed curve becomes a ring filter</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/bevels.png" alt="Sharp, bevelled and round pleats"></td>
+    <td><img src="docs/images/topology.png" alt="Clean quad topology on an L-shaped fold"></td>
   </tr>
   <tr>
     <td align="center"><sub>Pleat bevel: sharp, bevelled, round</sub></td>
@@ -49,10 +59,15 @@
 | Pleat density, depth, angle, thickness | ✅ | ✅ |
 | Pleat bevel, quads / tris, shading | ✅ | ✅ |
 | Flat border | ✅ | ✅ |
-| Border profiles (Chamfer, Round, Lip), overhang, front / back | | ✅ |
+| Boolean tool (cut the source mesh) | ✅ | ✅ |
+| UVs unrolled across the folds | ✅ | ✅ |
+| Border profiles (Chamfer, Round, Lip), overhang, front / back, end caps | | ✅ |
+| Ready-made shapes (cartridge, V-bank, box wrap, die-cut furnace…) | | ✅ |
+| Die-cut board face, wire mesh, pull tabs, printed labels | | ✅ |
+| Built-in materials and dirt | | ✅ |
 | Wear (Clouds displace) | | ✅ |
 | Hair & dust | | ✅ |
-| Boolean cutter | | ✅ |
+| Game-ready low poly, baked maps, FBX / glTF export | | ✅ |
 | Presets (built-in and your own) | | ✅ |
 
 Filters you make in Lite open in Pro with every setting intact, so you can upgrade at any time without redoing your work. Only one edition can be enabled at a time: disable Lite before enabling Pro.
@@ -79,7 +94,11 @@ Filters you make in Lite open in Pro with every setting intact, so you can upgra
 | A filter that fills a shape | Select a mesh, go to Edit Mode, select faces → **From Faces**. |
 | A filter from a wire outline | Select mesh edges in Edit Mode → **From Curve / Edges**. |
 
-Then work down the panel: **Pleats → Pleat Bevel → Shading → Border**, and click **Finish (Bake)** when you're done.
+Then work down the panel: **Pleats → Pleat Bevel → Shading → Border → Boolean**, and click **Finish (Bake)** when you're done.
+
+| To set a filter into a model | Do this |
+|---|---|
+| Recess it into a housing | Make the filter **From Faces** on the housing mesh, then turn on **Boolean** with **Envelope** and **Difference**. The housing is cut around the filter; the cut is applied when you click **Finish (Bake)**. |
 
 ## About this repository
 
