@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Filter Maker Lite",
     "author": "Tooboi",
-    "version": (0, 6, 6),
+    "version": (0, 7, 0),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar (N) > Filter Maker",
     "description": "Free pleated filter generator: line, curve, edge and face sources, pleat shaping, pleat bevel and a clean border.",
@@ -321,6 +321,61 @@ def _height_dir(p):
     return d
 
 
+def _curve_strip_np(bm, q3, wv, uacc, u_end, d, H, rows, cl):
+    """Extrude the pleated path into a strip (numpy + foreach_set): vertex (i, k) is
+    station i at height row k; UVs = (unrolled length, height) in metres."""
+    n = len(q3)
+    Q = np.asarray([tuple(q) for q in q3], dtype=np.float64)
+    hs = H * np.arange(rows + 1) / rows
+    coords = (Q[:, None, :] + np.asarray(tuple(d))[None, None, :] * hs[None, :, None]).reshape(-1, 3)
+    ncol = n if cl else n - 1
+    i = np.repeat(np.arange(ncol), rows)
+    k = np.tile(np.arange(rows), ncol)
+    j = (i + 1) % n
+    R = rows + 1
+    quads = np.stack([i * R + k, j * R + k, j * R + k + 1, i * R + k + 1], axis=1)
+    U = np.asarray(uacc, dtype=np.float64)
+    ui = U[i]
+    uj = np.where(j > i, U[j], u_end)
+    v0, v1 = hs[k], hs[k + 1]
+    luv = np.stack([np.stack([ui, v0], 1), np.stack([uj, v0], 1),
+                    np.stack([uj, v1], 1), np.stack([ui, v1], 1)], axis=1).reshape(-1, 2)
+    me = bpy.data.meshes.new(".FM strip tmp")
+    try:
+        _mesh_from_arrays(me, coords, quads.tolist())
+        uvl = me.uv_layers.new(name=UV_LAYER)
+        if len(uvl.data) == len(luv):
+            uvl.data.foreach_set("uv", luv.astype(np.float32).ravel())
+        attr = me.attributes.new(PLEAT_ATTR, 'FLOAT', 'POINT')
+        if len(attr.data) == n * R:
+            attr.data.foreach_set("value", np.repeat(np.asarray(wv, dtype=np.float32), R))
+        me.update()
+        bm.from_mesh(me)
+    finally:
+        bpy.data.meshes.remove(me)
+
+
+def _curve_strip_py(bm, q3, wv, uacc, u_end, d, H, rows, cl):
+    n = len(q3)
+    uvl = bm.loops.layers.uv.get(UV_LAYER) or bm.loops.layers.uv.new(UV_LAYER)
+    pl = bm.verts.layers.float.get(PLEAT_ATTR) or bm.verts.layers.float.new(PLEAT_ATTR)
+    cols = [[bm.verts.new(q3[i] + d * (H * k / rows)) for k in range(rows + 1)] for i in range(n)]
+    for i in range(n):
+        for vert in cols[i]:
+            vert[pl] = wv[i]
+    for i in range(n if cl else n - 1):
+        j = (i + 1) % n
+        ui, uj = uacc[i], (uacc[j] if j > i else u_end)
+        for k in range(rows):
+            try:
+                f = bm.faces.new((cols[i][k], cols[j][k], cols[j][k + 1], cols[i][k + 1]))
+            except ValueError:
+                continue
+            v0, v1 = H * k / rows, H * (k + 1) / rows
+            for lp, uv in zip(f.loops, ((ui, v0), (uj, v0), (uj, v1), (ui, v1))):
+                lp[uvl].uv = uv
+
+
 def build_curve(bm, p, src, ref=None):
     d, H = _height_dir(p), max(p.height, 1e-5)
     rows = max(1, min(200, int(round(H * p.detail))))
@@ -358,7 +413,7 @@ def build_curve(bm, p, src, ref=None):
                 poss.insert(0, 0.0)
             poss.append(Lp)
         cp = _resample_at(pts, [q * period for q in poss], cl)
-        n, q3 = len(cp), []
+        n, q3, wv = len(cp), [], []
         for i, c in enumerate(cp):
             prev = cp[i - 1] if (i > 0 or cl) else c
             nxt = cp[(i + 1) % n] if (i < n - 1 or cl) else c
@@ -371,15 +426,19 @@ def build_curve(bm, p, src, ref=None):
             if side.length < 1e-9:
                 side = Vector((1, 0, 0))
             side.normalize()
-            q3.append(c + side * (depth * ev(poss[i] + p.pleat_phase)))
-        cols = [[bm.verts.new(q3[i] + d * (H * k / rows)) for k in range(rows + 1)] for i in range(n)]
-        for i in range(n if cl else n - 1):
-            j = (i + 1) % n
-            for k in range(rows):
-                try:
-                    bm.faces.new((cols[i][k], cols[j][k], cols[j][k + 1], cols[i][k + 1]))
-                except ValueError:
-                    pass
+            w = ev(poss[i] + p.pleat_phase)
+            wv.append(w)
+            q3.append(c + side * (depth * w))
+        # UVs in metres: unrolled length along the pleated path x height (an extruded
+        # strip unrolls flat, so this is stretch-free).
+        uacc = [0.0]
+        for i in range(1, n):
+            uacc.append(uacc[-1] + (q3[i] - q3[i - 1]).length)
+        u_end = uacc[-1] + ((q3[0] - q3[-1]).length if cl else 0.0)
+        if np is not None:
+            _curve_strip_np(bm, q3, wv, uacc, u_end, d, H, rows, cl)
+        else:
+            _curve_strip_py(bm, q3, wv, uacc, u_end, d, H, rows, cl)
         if ref is not None:
             _wall_path(ref, pts, cl, d, H, p.pleat_density)
 
@@ -727,7 +786,7 @@ def _grid_mesh(cos, vnorm, tris, tri_uv, UL, VL, qstep):
         pos = cos[i] * w[0] + cos[j] * w[1] + cos[k] * w[2]
         nrm = vnorm[i] * w[0] + vnorm[j] * w[1] + vnorm[k] * w[2]
         nrm = nrm.normalized() if nrm.length > 1e-12 else vnorm[i].copy()
-        verts[key] = (pos, nrm, pu)
+        verts[key] = (pos, nrm, pu, pv)
 
     # Grid corners: which triangle contains each one.
     corner_ok = {}
@@ -901,7 +960,7 @@ def _grid_mesh_np(cos, vnorm, tris, tri_uv, UL, VL, qstep):
 
     Interior cells are found and built with array maths; only the cells crossed by
     the outline go through the clipping / merging path. Returns
-    (positions (N,3), normals (N,3), u (N,), faces as vertex-index lists).
+    (positions (N,3), normals (N,3), u (N,), v (N,), faces as vertex-index lists).
     """
     nU, nV = len(UL) - 1, len(VL) - 1
     if nU < 1 or nV < 1 or not tris:
@@ -1006,7 +1065,7 @@ def _grid_mesh_np(cos, vnorm, tris, tri_uv, UL, VL, qstep):
         complex_cells.add((int(a), int(b)))
 
     # ---- corner vertices (only the ones a face will use are kept later) ----
-    pos_list, nrm_list, u_list = [], [], []
+    pos_list, nrm_list, u_list, v_list = [], [], [], []
     corner_vid = np.full((nU + 1, nV + 1), -1, dtype=np.int64)
     li, lj = np.nonzero(located)
     if len(li):
@@ -1023,6 +1082,7 @@ def _grid_mesh_np(cos, vnorm, tris, tri_uv, UL, VL, qstep):
         pos_list.append(cpos)
         nrm_list.append(cn)
         u_list.append(ULa[li])
+        v_list.append(VLa[lj])
     n_corner = len(li)
 
     # interior quads, counter-clockwise in (u, v)
@@ -1033,7 +1093,7 @@ def _grid_mesh_np(cos, vnorm, tris, tri_uv, UL, VL, qstep):
     faces = quads.tolist()
 
     # ---- outline cells: clip against the triangles, merge, strip extra points ----
-    extra_pos, extra_nrm, extra_u = [], [], []
+    extra_pos, extra_nrm, extra_u, extra_v = [], [], [], []
     extra_id = {}
 
     def near_line(lines, x):
@@ -1074,6 +1134,7 @@ def _grid_mesh_np(cos, vnorm, tris, tri_uv, UL, VL, qstep):
         extra_pos.append(pos)
         extra_nrm.append(nrm)
         extra_u.append(pu)
+        extra_v.append(pv)
         extra_id[key] = v
         return v
 
@@ -1194,12 +1255,50 @@ def _grid_mesh_np(cos, vnorm, tris, tri_uv, UL, VL, qstep):
         pos_list.append(np.asarray(extra_pos))
         nrm_list.append(np.asarray(extra_nrm))
         u_list.append(np.asarray(extra_u))
+        v_list.append(np.asarray(extra_v))
     if not pos_list:
         return None
     pos = np.concatenate(pos_list) if len(pos_list) > 1 else pos_list[0]
     nrm = np.concatenate(nrm_list) if len(nrm_list) > 1 else nrm_list[0]
     us = np.concatenate(u_list) if len(u_list) > 1 else u_list[0]
-    return pos, nrm, us, faces
+    vs = np.concatenate(v_list) if len(v_list) > 1 else v_list[0]
+    return pos, nrm, us, vs, faces
+
+
+UV_LAYER = "UVMap"
+PLEAT_ATTR = "fm_pleat"          # pleat profile value per vertex: +1 ridge, -1 valley
+EDGE_ATTR = "fm_edge"            # 0 at the border's inner edge -> 1 deep inside (for dirt masks)
+
+
+def _arc_table(table, period, depth):
+    """Cumulative surface length over one pleat period (the profile unrolled flat).
+    Returns (xs, cumulative lengths, length of one period)."""
+    pts = list(table) + [(table[0][0] + 1.0, table[0][1])]
+    xs, cum, acc = [pts[0][0]], [0.0], 0.0
+    for (xa, wa), (xb, wb) in zip(pts, pts[1:]):
+        acc += math.hypot((xb - xa) * period, (wb - wa) * depth)
+        xs.append(xb)
+        cum.append(acc)
+    return xs, cum, acc
+
+
+def _arc_np(arc, x):
+    """Unrolled length at pleat coordinate x (in periods), vectorised."""
+    xs, cum, per = arc
+    x0 = xs[0]
+    k = np.floor(x - x0)
+    return k * per + np.interp(x - x0 - k + x0, xs, cum)
+
+
+def _arc_py(arc, x):
+    xs, cum, per = arc
+    x0 = xs[0]
+    k = math.floor(x - x0)
+    xm = x - x0 - k + x0
+    i = max(0, min(len(xs) - 2, bisect.bisect_right(xs, xm) - 1))
+    span = xs[i + 1] - xs[i]
+    t = 0.0 if span < 1e-12 else (xm - xs[i]) / span
+    return k * per + cum[i] + (cum[i + 1] - cum[i]) * t
 
 
 def _profile_np(table, x):
@@ -1343,10 +1442,18 @@ def _face_component(bm, p, comp):
     _t0 = time.perf_counter()
 
     used = {key for keys in faces for key in keys}
-    new_verts = {}
-    for key, (pos, nrm, pu) in verts.items():
+    new_verts, vuv = {}, {}
+    arc = _arc_table(table, period, depth)
+    uvl = bm.loops.layers.uv.get(UV_LAYER) or bm.loops.layers.uv.new(UV_LAYER)
+    pl = bm.verts.layers.float.get(PLEAT_ATTR) or bm.verts.layers.float.new(PLEAT_ATTR)
+    for key, (pos, nrm, pu, pv) in verts.items():
         if key in used:
-            new_verts[key] = bm.verts.new(pos + nrm * (depth * ev((pu - base) / period)))
+            x = (pu - base) / period
+            w = ev(x)
+            vert = bm.verts.new(pos + nrm * (depth * w))
+            vert[pl] = w
+            new_verts[key] = vert
+            vuv[vert] = (_arc_py(arc, x), pv)
     created = []
     for keys in faces:
         vl = []
@@ -1359,9 +1466,12 @@ def _face_component(bm, p, comp):
         if len(vl) < 3:
             continue
         try:
-            created.append(bm.faces.new(vl))
+            f = bm.faces.new(vl)
         except ValueError:
-            pass
+            continue
+        for lp in f.loops:
+            lp[uvl].uv = vuv[lp.vert]
+        created.append(f)
     _FACE_TIMINGS["assemble_ms"] = _FACE_TIMINGS.get("assemble_ms", 0.0) + (time.perf_counter() - _t0) * 1000.0
     _t0 = time.perf_counter()
     vlist = list(new_verts.values())
@@ -1382,6 +1492,29 @@ def _face_component(bm, p, comp):
     _FACE_TIMINGS["cleanup_ms"] = _FACE_TIMINGS.get("cleanup_ms", 0.0) + (time.perf_counter() - _t0) * 1000.0
 
 
+def _mesh_from_arrays(me, coords, faces):
+    """Fill an empty mesh from vertex coordinates and polygon index lists with
+    foreach_set (several times faster than from_pydata on big grids)."""
+    nv = len(coords)
+    sizes = np.fromiter((len(f) for f in faces), dtype=np.int32, count=len(faces))
+    loops = np.fromiter((i for f in faces for i in f), dtype=np.int32, count=int(sizes.sum()))
+    starts = np.zeros(len(faces), dtype=np.int32)
+    if len(faces) > 1:
+        starts[1:] = np.cumsum(sizes)[:-1]
+    me.vertices.add(nv)
+    me.vertices.foreach_set("co", np.asarray(coords, dtype=np.float32).ravel())
+    me.loops.add(len(loops))
+    me.loops.foreach_set("vertex_index", loops)
+    me.polygons.add(len(faces))
+    me.polygons.foreach_set("loop_start", starts)
+    try:
+        me.polygons.foreach_set("loop_total", sizes)
+    except Exception:
+        pass                                  # read-only in newer Blender (derived from loop_start)
+    me.update(calc_edges=True)
+    me.validate(clean_customdata=False)
+
+
 def _face_component_np(bm, p, cos, vnorm, tris, tri_uv, UL, VL, qstep, table, base, period, depth, size):
     """Fast path: numpy grid, vectorised pleat displacement, C-speed mesh assembly."""
     _t0 = time.perf_counter()
@@ -1389,7 +1522,7 @@ def _face_component_np(bm, p, cos, vnorm, tris, tri_uv, UL, VL, qstep, table, ba
     _FACE_TIMINGS["grid_ms"] = _FACE_TIMINGS.get("grid_ms", 0.0) + (time.perf_counter() - _t0) * 1000.0
     if res is None:
         return True
-    pos, nrm, us, faces = res
+    pos, nrm, us, vs, faces = res
     if not faces:
         return True
     _t0 = time.perf_counter()
@@ -1399,8 +1532,13 @@ def _face_component_np(bm, p, cos, vnorm, tris, tri_uv, UL, VL, qstep, table, ba
         used[f] = True
     remap = np.full(len(pos), -1, dtype=np.int64)
     remap[used] = np.arange(int(used.sum()))
-    disp = depth * _profile_np(table, (us[used] - base) / period)
-    coords = pos[used] + nrm[used] * disp[:, None]
+    xq = (us[used] - base) / period
+    prof = _profile_np(table, xq)
+    coords = pos[used] + nrm[used] * (depth * prof)[:, None]
+    # UVs in metres: unrolled length across the pleats x length along them, so the
+    # texture keeps its proportions on every fold (no stretching on flanks or bevels).
+    uv_u = _arc_np(_arc_table(table, period, depth), xq)
+    uv_v = vs[used]
     faces = [remap[f].tolist() for f in faces]
     n_quads = 0
     for f in faces:
@@ -1409,7 +1547,13 @@ def _face_component_np(bm, p, cos, vnorm, tris, tri_uv, UL, VL, qstep, table, ba
         n_quads += 1
     tmp_me = bpy.data.meshes.new(".FM grid tmp")
     try:
-        tmp_me.from_pydata(coords.tolist(), [], faces)
+        _mesh_from_arrays(tmp_me, coords, faces)
+        loop_v = np.empty(len(tmp_me.loops), dtype=np.int32)
+        tmp_me.loops.foreach_get("vertex_index", loop_v)
+        uvl = tmp_me.uv_layers.new(name=UV_LAYER)
+        uvl.data.foreach_set("uv", np.stack([uv_u[loop_v], uv_v[loop_v]], axis=1).astype(np.float32).ravel())
+        attr = tmp_me.attributes.new(PLEAT_ATTR, 'FLOAT', 'POINT')
+        attr.data.foreach_set("value", prof.astype(np.float32))
         tmp_me.update()
         bm.verts.ensure_lookup_table()
         bm.faces.ensure_lookup_table()
@@ -1730,13 +1874,25 @@ def _sweep_loop(co, nrm, inw_edge, sec, face_n=None):
     for k in range(n):
         for j in range(m_):
             verts.append(cols[j][k])
-    quads = []
+    # UVs in metres: length along the loop x length around the cross-section
+    ucum = [0.0]
+    for k in range(1, n):
+        ucum.append(ucum[-1] + (co[k] - co[k - 1]).length)
+    u_end = ucum[-1] + (co[0] - co[-1]).length
+    vcum = [0.0]
+    for j in range(1, m_):
+        vcum.append(vcum[-1] + math.hypot(sec[j][0] - sec[j - 1][0], sec[j][1] - sec[j - 1][1]))
+    v_end = vcum[-1] + math.hypot(sec[0][0] - sec[-1][0], sec[0][1] - sec[-1][1])
+    quads, uvs = [], []
     for k in range(n):
         k2 = (k + 1) % n
+        ua, ub = ucum[k], (ucum[k2] if k2 > k else u_end)
         for j in range(m_):
             j2 = (j + 1) % m_
+            va, vb = vcum[j], (vcum[j2] if j2 > j else v_end)
             quads.append((k * m_ + j, k2 * m_ + j, k2 * m_ + j2, k * m_ + j2))
-    return verts, quads
+            uvs.append(((ua, va), (ub, va), (ub, vb), (ua, vb)))
+    return verts, quads, uvs
 
 
 def build_border(p, rb):
@@ -1754,6 +1910,7 @@ def build_border(p, rb):
     if len(sec) < 3:
         return None
     fb = bmesh.new()
+    loops_out = []
     for ids, cl in _chains(bedges):
         if not cl or len(ids) < 3:
             continue
@@ -1779,23 +1936,113 @@ def build_border(p, rb):
                 iv = -iv
             inw.append(iv)
         nrm = [v.normal.copy() if v.normal.length > 1e-9 else Vector((0, 0, 1)) for v in P]
-        verts, quads = _sweep_loop([v.co for v in P], nrm, inw, sec, fns)
+        verts, quads, quvs = _sweep_loop([v.co for v in P], nrm, inw, sec, fns)
         fv = [fb.verts.new(c) for c in verts]
-        for q in quads:
+        uvl = fb.loops.layers.uv.get(UV_LAYER) or fb.loops.layers.uv.new(UV_LAYER)
+        for q, quv in zip(quads, quvs):
             try:
-                fb.faces.new([fv[i] for i in q])
+                f = fb.faces.new([fv[i] for i in q])
             except ValueError:
-                pass
+                continue
+            for lp, uv in zip(f.loops, quv):
+                lp[uvl].uv = uv
+        loops_out.append((fv, len(sec), sec))
     if not fb.faces:
         fb.free()
         return None
     bmesh.ops.recalc_face_normals(fb, faces=fb.faces[:])
+    caps = getattr(p, "border_caps", 'NONE')
+    if caps != 'NONE' and len(loops_out) >= 2:
+        _add_end_caps(fb, p, loops_out, caps)
+    _add_grille(fb, p, rb, W, F, B)
+    _add_pull_tabs(fb, p, rb, W, O, F, B)
     return fb
+
+
+def _add_end_caps(fb, p, loops_out, caps):
+    """Close the ends of a ring-shaped filter (cartridge / cylinder): a plate across
+    each chosen border ring, optionally with a round hole in the middle."""
+    # Filter Maker Pro only (removed from the Lite build)
+    return
 
 
 # ---------------------------------------------------------------------------
 # Boolean cutter
 # ---------------------------------------------------------------------------
+
+# ---- die-cut face, wire mesh support, pull tabs and printed graphics --------
+
+GRILLE_PATTERNS = (
+    ('NONE', "None", "Open frame, no face sheet"),
+    ('DIAMOND', "Diamond", "Die-cut board face with diamond openings, like a furnace filter"),
+    ('SQUARE', "Square", "Face sheet with a grid of rectangular openings"),
+)
+WIRE_PATTERNS = (
+    ('DIAMOND', "Diamond", "Diagonal wires pleated with the media: scallops across the pleats"),
+    ('SQUARE', "Square", "Wires along and across the pleats"),
+)
+PRINT_ATTR_MAT = "FM Print Ink"
+
+
+
+
+
+
+
+
+
+
+
+
+def _add_grille(fb, p, rb, W, F, B):
+    """Die-cut face sheets over the front and / or back of the frame."""
+    # Filter Maker Pro only (removed from the Lite build)
+    return
+
+
+
+
+
+
+
+
+def _add_pull_tabs(fb, p, rb, W, O, F, B):
+    # Filter Maker Pro only (removed from the Lite build)
+    return
+
+
+# ---- wire mesh support ----------------------------------------------------------
+
+
+
+
+
+
+
+def update_wire(obj, p, bm):
+    # Filter Maker Pro only (removed from the Lite build)
+    _remove_child(p, "wire_obj")
+
+
+# ---- printed graphics ---------------------------------------------------------
+
+_TEXT_CACHE = {}
+
+
+
+
+
+
+
+
+
+
+
+
+def update_print(obj, p, rb, W, O, F, B):
+    # Filter Maker Pro only (removed from the Lite build)
+    _remove_child(p, "print_obj")
+
 
 def _cut_pad(p):
     effective_thickness = p.thickness if getattr(p, "use_thickness", False) else 0.0
@@ -1922,15 +2169,48 @@ def _slab(src_bm, pad):
 
 
 def build_cutter(p, src):
-    # Filter Maker Pro only (removed from the Lite build)
-    raise RuntimeError('Not available in Filter Maker Lite.')
+    if p.boolean_source == 'ENVELOPE':
+        pad = _cut_pad(p)
+        if p.mode == 'CURVE':
+            rb = bmesh.new()
+            try:
+                d, H = _height_dir(p), max(p.height, 1e-5)
+                for path, cl in zip(src["paths"], src["closed"]):
+                    _wall_path(rb, [Vector(x) for x in path], cl, d, H, p.pleat_density)
+                out = _slab(rb, pad)
+            finally:
+                rb.free()
+        else:
+            tmp, _comps = _faces_bmesh(src)
+            try:
+                out = _slab(tmp, pad)
+            finally:
+                tmp.free()
+        return out, None
+    if p.mode == 'CURVE':
+        ax, pts, tk, H = _frame_curve(p, src)
+        rng = _box_ranges(p, ax, pts, tk, extra_hi=(1, H))
+    else:
+        ax, pts, tk = _frame_face(p, src)
+        rng = _box_ranges(p, ax, pts, tk)
+    cb = bmesh.new()
+    verts, quads = _box_geometry(ax, rng)
+    vs = [cb.verts.new(c) for c in verts]
+    for q in quads:
+        try:
+            cb.faces.new([vs[i] for i in q])
+        except ValueError:
+            pass
+    bmesh.ops.recalc_face_normals(cb, faces=cb.faces[:])
+    return cb, _make_keep(p, ax, rng)
 
 
 # ---------------------------------------------------------------------------
 # Regeneration / object children
 # ---------------------------------------------------------------------------
 
-CHILD_ATTRS = ("particles_obj", "hair_obj", "dust_obj", "border_obj", "cutter_obj", "fuzz_obj")
+CHILD_ATTRS = ("particles_obj", "hair_obj", "dust_obj", "border_obj", "cutter_obj", "fuzz_obj",
+               "wire_obj", "print_obj")
 
 
 _CHILD_SUFFIX = {
@@ -1940,6 +2220,8 @@ _CHILD_SUFFIX = {
     "border_obj": "_Border",
     "cutter_obj": "_Cutter",
     "fuzz_obj": "_Fuzz",
+    "wire_obj": "_Wire",
+    "print_obj": "_Print",
 }
 
 
@@ -1950,7 +2232,7 @@ def _find_child(obj, attr):
         return None
     pattern = re.compile(re.escape(suffix) + r"(?:\.\d{3})?$")
     for child in obj.children:
-        if child.type == 'MESH' and pattern.search(child.name):
+        if child.type in {'MESH', 'CURVE'} and pattern.search(child.name):
             return child
     return None
 
@@ -1961,10 +2243,13 @@ def _remove_child(p, attr):
     if ob is None and isinstance(owner, bpy.types.Object):
         ob = _find_child(owner, attr)
     if ob:
-        me = ob.data
+        data = ob.data
         bpy.data.objects.remove(ob, do_unlink=True)
-        if me and me.users == 0:
-            bpy.data.meshes.remove(me)
+        if data is not None and data.users == 0:
+            if isinstance(data, bpy.types.Mesh):
+                bpy.data.meshes.remove(data)
+            elif isinstance(data, bpy.types.Curve):
+                bpy.data.curves.remove(data)
     try:
         setattr(p, attr, None)
     except Exception:
@@ -1975,6 +2260,9 @@ def _write_child(obj, p, attr, suffix, cbm, mat):
     ob = getattr(p, attr, None)
     if ob is None or ob.name not in bpy.data.objects or ob.parent != obj:
         ob = _find_child(obj, attr)
+    if ob is not None and ob.type != 'MESH':
+        _remove_child(p, attr)
+        ob = None
     if ob is None:
         name = obj.name + suffix
         me = bpy.data.meshes.new(name)
@@ -2043,8 +2331,39 @@ def _remove_source_boolean(filter_obj, p):
 
 def sync_boolean(obj, p):
     """Cut the original source mesh with the generated bounds, not the filter mesh."""
-    # Filter Maker Pro only (removed from the Lite build)
-    return
+    source = getattr(p, "source_obj", None)
+    host = source if source is not None and source.type == 'MESH' else None
+    target = p.boolean_obj if p.boolean_source == 'OBJECT' else p.cutter_obj
+    name = _boolean_mod_name(obj, p)
+    mod = host.modifiers.get(name) if host is not None else None
+
+    # Remove any legacy modifier previously placed on the generated filter itself.
+    legacy = obj.modifiers.get(BOOL_NAME)
+    if legacy is not None and legacy.type == 'BOOLEAN':
+        obj.modifiers.remove(legacy)
+
+    valid = (p.use_boolean and host is not None and target is not None and target != host
+             and target != obj and target.name in bpy.data.objects and target.type == 'MESH')
+    if not valid:
+        if mod is not None:
+            host.modifiers.remove(mod)
+        return
+
+    if mod is None:
+        mod = host.modifiers.new(name, 'BOOLEAN')
+    mod.operation = p.boolean_op
+    mod.solver = p.boolean_solver
+    try:
+        mod.operand_type = 'OBJECT'
+    except Exception:
+        pass
+    mod.object = target
+
+    # The source may have been hidden by the source-generation operator.
+    try:
+        host.hide_set(False)
+    except Exception:
+        pass
 
 
 def _source_normals_for_faces(src):
@@ -2379,27 +2698,36 @@ def _remove_lib(p, attr):
     _drop_coll_if_unused(coll, exclude=p)
 
 
+def _lib_variants(kind, p):
+    """Pieces in the shared collection: the most any filter using it asks for. Each filter
+    picks from the first N of them (its own setting); the pieces are generated in a fixed
+    order, so the first N are the same whatever the total."""
+    attr, use = ("hair_variants", "use_hair") if kind == 'hair' else ("dust_variants", "use_dust")
+    n = int(getattr(p, attr))
+    for ob in _all_filters():
+        fp = ob.filter_maker
+        if getattr(fp, use):
+            n = max(n, int(getattr(fp, attr)))
+    return n
+
+
 def _hair_params(p):
-    return {"curl": round(float(p.hair_curl), 4), "variants": int(p.hair_variants), "v": 2}
+    return {"curl": round(float(p.hair_curl), 4), "variants": _lib_variants('hair', p), "v": 2}
 
 
 def _dust_params(p):
-    return {"types": sorted(p.dust_types), "variants": int(p.dust_variants),
-            "mat": p.dust_material.name if p.dust_material else ""}
+    return {"types": sorted(p.dust_types), "variants": _lib_variants('dust', p),
+            "mat": p.dust_material.name if p.dust_material else "", "v": 2}
 
 
 def _apply_hair_params(fp, prm):
     if abs(fp.hair_curl - prm["curl"]) > 1e-6:
         fp.hair_curl = prm["curl"]
-    if fp.hair_variants != prm["variants"]:
-        fp.hair_variants = prm["variants"]
 
 
 def _apply_dust_params(fp, prm):
     if sorted(fp.dust_types) != prm["types"]:
         fp.dust_types = set(prm["types"])
-    if fp.dust_variants != prm["variants"]:
-        fp.dust_variants = prm["variants"]
     mat = bpy.data.materials.get(prm["mat"]) if prm["mat"] else None
     if fp.dust_material != mat:
         fp.dust_material = mat
@@ -2556,7 +2884,7 @@ def _remove_psys(emitter, name):
 # (which Blender 5.x no longer accepts from Python as item assignment).
 # ---------------------------------------------------------------------------
 
-SCATTER_VERSION = 11
+SCATTER_VERSION = 12
 SCATTER_MOD = "Filter Maker Scatter"
 SCATTER_PREFIX = "FilterMaker Scatter "
 DUST_SEED_OFFSET = 7919                    # hair and dust never share spawn points
@@ -2581,6 +2909,8 @@ SCATTER_VALUES = (
     ("Hair Falloff", 'FLOAT', 0.05),
     ("Dust Falloff", 'FLOAT', 0.05),
     ("Hair Width", 'FLOAT', 0.0005),
+    ("Hair Variant Max", 'INT', 1000000),   # pick from the first N pieces only (N - 1)
+    ("Dust Variant Max", 'INT', 1000000),
     ("Debug", 'FLOAT', 0.0),          # 1 = store per-strand attributes (used by the tests)
 )
 HAIR_SAMPLES = 24                     # points per strand after resampling
@@ -2651,6 +2981,269 @@ def refresh_scatter(obj, p, emitter=None):
 
 
 
+# ---------------------------------------------------------------------------
+# UV space, dirt masks and built-in materials
+# ---------------------------------------------------------------------------
+GAME_MAPS = (('NORMAL', "Normal", "Tangent-space normal map"),
+             ('AO', "AO", "Ambient occlusion"),
+             ('COLOR', "Base Color", "Diffuse colour of the materials"),
+             ('ROUGHNESS', "Roughness", "Roughness of the materials"))
+DIRT_ATTR = "fm_dirt"            # per-vertex dirt amount (0..1), read by the built-in materials
+STYLE_VERSION = 2
+
+FILTER_STYLES = (
+    ('CUSTOM', "Custom", "Use the material in the Filter Material slot"),
+    ('PAPER', "Paper", "White cellulose filter paper with fine fibres"),
+    ('SYNTHETIC', "Synthetic", "Light blue synthetic media"),
+    ('HEPA', "HEPA", "Bright white, very fine HEPA media"),
+    ('FIBERGLASS', "Fibreglass", "Yellow fibreglass media"),
+    ('CARBON', "Carbon", "Dark activated-carbon media with speckles"),
+)
+FRAME_STYLES = (
+    ('CUSTOM', "Custom", "Use the material in the Border Material slot"),
+    ('PAINTED', "Painted Metal", "Dark powder-coated metal"),
+    ('GALVANIZED', "Galvanised", "Galvanised steel with zinc spangles"),
+    ('ALUMINIUM', "Aluminium", "Brushed aluminium"),
+    ('CARDBOARD', "Cardboard", "Brown corrugated cardboard"),
+    ('PLASTIC', "Plastic", "Off-white moulded plastic"),
+    ('RUBBER', "Rubber", "Black rubber / foam gasket"),
+    ('WHITE_BOARD', "White Board", "White coated paperboard, like die-cut furnace filter frames"),
+)
+_MEDIA = {
+    'PAPER': dict(color=(0.86, 0.84, 0.76), rough=0.88, fiber=1.0, speck=0.0, sheen=0.25),
+    'SYNTHETIC': dict(color=(0.62, 0.74, 0.86), rough=0.8, fiber=0.6, speck=0.0, sheen=0.35),
+    'HEPA': dict(color=(0.93, 0.94, 0.95), rough=0.9, fiber=0.35, speck=0.0, sheen=0.2),
+    'FIBERGLASS': dict(color=(0.86, 0.7, 0.32), rough=0.75, fiber=1.4, speck=0.0, sheen=0.3),
+    'CARBON': dict(color=(0.07, 0.07, 0.075), rough=0.92, fiber=0.4, speck=1.0, sheen=0.0),
+}
+_FRAMES = {
+    'PAINTED': dict(color=(0.035, 0.037, 0.04), rough=0.55, metal=0.0, pattern='NOISE'),
+    'GALVANIZED': dict(color=(0.62, 0.63, 0.65), rough=0.32, metal=1.0, pattern='SPANGLE'),
+    'ALUMINIUM': dict(color=(0.8, 0.81, 0.83), rough=0.28, metal=1.0, pattern='BRUSHED'),
+    'CARDBOARD': dict(color=(0.42, 0.3, 0.18), rough=0.92, metal=0.0, pattern='FIBER'),
+    'PLASTIC': dict(color=(0.78, 0.78, 0.75), rough=0.42, metal=0.0, pattern='NOISE'),
+    'RUBBER': dict(color=(0.025, 0.025, 0.027), rough=0.86, metal=0.0, pattern='NOISE'),
+    'WHITE_BOARD': dict(color=(0.86, 0.86, 0.84), rough=0.82, metal=0.0, pattern='NOISE'),
+}
+_DIRT_COLOR = (0.2, 0.17, 0.13, 1.0)
+
+
+def _apply_uv_space(me, p):
+    """Turn the raw UVs (metres) into the chosen UV space."""
+    uvl = me.uv_layers.get(UV_LAYER) if me is not None else None
+    if uvl is None or not len(uvl.data) or np is None:
+        return
+    uv = np.empty(len(uvl.data) * 2, dtype=np.float32)
+    uvl.data.foreach_get("uv", uv)
+    uv = uv.reshape(-1, 2)
+    if getattr(p, "uv_mode", 'WORLD') == 'FIT':
+        lo = uv.min(axis=0)
+        span = max(float((uv.max(axis=0) - lo).max()), 1e-9)
+        uv = (uv - lo) / span
+    else:
+        uv = uv / max(getattr(p, "uv_tile", 0.1), 1e-6)
+    uvl.data.foreach_set("uv", uv.astype(np.float32).ravel())
+
+
+def _write_masks(bm, p, dist, W):
+    """Per-vertex fm_edge (0 at the frame's inner edge -> 1 far inside) and fm_dirt
+    (dirt amount x where dirt collects: away from the frame and in the folds)."""
+    pl = bm.verts.layers.float.get(PLEAT_ATTR)
+    el = bm.verts.layers.float.get(EDGE_ATTR) or bm.verts.layers.float.new(EDGE_ATTR)
+    dl = bm.verts.layers.float.get(DIRT_ATTR) or bm.verts.layers.float.new(DIRT_ATTR)
+    verts = list(bm.verts)
+    amount = max(0.0, min(1.0, getattr(p, "dirt", 0.0)))
+    if dist is not None and len(dist) == len(verts):
+        inner = [d - W for d in dist]
+        span = max(max(inner) if inner else 0.0, 1e-6)
+        edge = [max(0.0, min(1.0, x / (0.6 * span))) for x in inner]
+    else:
+        edge = [1.0] * len(verts)
+    for v, e in zip(verts, edge):
+        w = v[pl] if pl is not None else 0.0
+        fold = 0.5 * (1.0 - w)                      # 1 in the valleys, 0 on the ridges
+        v[el] = e
+        v[dl] = amount * _smoothstep(e) * (0.6 + 0.4 * fold)
+
+
+def _set_frame_dirt(fb, p):
+    dl = fb.verts.layers.float.get(DIRT_ATTR) or fb.verts.layers.float.new(DIRT_ATTR)
+    amount = 0.45 * max(0.0, min(1.0, getattr(p, "dirt", 0.0)))
+    for v in fb.verts:
+        v[dl] = amount
+
+
+def _mat_nodes(mat):
+    """Fresh node tree; returns (nodes, links, principled, output)."""
+    safe = getattr(mat, "use_nodes", None)
+    if safe is not None and not mat.use_nodes:
+        try:
+            mat.use_nodes = True
+        except Exception:
+            pass
+    nt = mat.node_tree
+    nt.nodes.clear()
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    out.location = (900, 0)
+    bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled")
+    bsdf.location = (600, 0)
+    nt.links.new(bsdf.outputs[0], out.inputs[0])
+    return nt.nodes, nt.links, bsdf, out
+
+
+_SOCK_ALIASES = {"Fac": ("Factor",), "Factor": ("Fac",), "Color": ("Colour",)}
+
+
+def _sock(sockets, names, types=None):
+    """Shader socket by name, tolerant of renames between Blender versions
+    (5.x renamed the texture 'Fac' outputs to 'Factor')."""
+    names = list(names if isinstance(names, (list, tuple)) else (names,))
+    for nm in list(names):
+        names += [a for a in _SOCK_ALIASES.get(nm, ()) if a not in names]
+    for nm in names:
+        try:
+            return _ng_sock(sockets, nm, types)
+        except KeyError:
+            pass
+    # outputs only: fall back to the first enabled socket of the right type
+    if types and len(sockets) and getattr(sockets[0], "is_output", False):
+        for s in sockets:
+            if s.type in types and getattr(s, "enabled", True):
+                return s
+    return None
+
+
+def _link(links, a, b):
+    """links.new that tells which socket was missing instead of a bare TypeError."""
+    if a is None or b is None:
+        raise RuntimeError("material socket missing (%s -> %s)" % (a, b))
+    return links.new(a, b)
+
+
+def _setin(node, names, value, types=None):
+    s = _sock(node.inputs, names, types)
+    if s is not None:
+        try:
+            s.default_value = value
+        except Exception:
+            pass
+    return s
+
+
+def _mix_rgb(nodes, links, x, y, fac, a, b):
+    """Colour mix (A -> B by fac). fac/a/b are sockets or values."""
+    m = nodes.new("ShaderNodeMix")
+    m.location = (x, y)
+    m.data_type = 'RGBA'
+    C = {'RGBA'}
+    for names, v, types in ((("Factor", "Fac"), fac, {'VALUE'}), (("A",), a, C), (("B",), b, C)):
+        s = _sock(m.inputs, names, types)
+        if s is None:
+            continue
+        if hasattr(v, "is_output"):
+            _link(links, v, s)
+        else:
+            s.default_value = v
+    return _sock(m.outputs, "Result", C)
+
+
+def _math(nodes, links, x, y, op, a, b=None):
+    n = nodes.new("ShaderNodeMath")
+    n.location = (x, y)
+    n.operation = op
+    for i, v in enumerate((a, b)):
+        if v is None:
+            continue
+        if hasattr(v, "is_output"):
+            _link(links, v, n.inputs[i])
+        else:
+            n.inputs[i].default_value = v
+    return n.outputs[0]
+
+
+def _attr(nodes, x, y, name):
+    a = nodes.new("ShaderNodeAttribute")
+    a.location = (x, y)
+    a.attribute_name = name
+    try:
+        a.attribute_type = 'GEOMETRY'
+    except Exception:
+        pass
+    return _sock(a.outputs, "Fac", {'VALUE'})
+
+
+def _uv(nodes, x, y):
+    n = nodes.new("ShaderNodeUVMap")
+    n.location = (x, y)
+    try:
+        n.uv_map = UV_LAYER
+    except Exception:
+        pass
+    return n.outputs[0]
+
+
+def _tex(nodes, links, kind, x, y, vec, **inputs):
+    n = nodes.new(kind)
+    n.location = (x, y)
+    for k, v in inputs.items():
+        if k.startswith("_"):
+            try:
+                setattr(n, k[1:], v)
+            except Exception:
+                pass
+        else:
+            _setin(n, k.replace("_", " "), v)
+    if vec is not None:
+        s = _sock(n.inputs, "Vector", {'VECTOR'})
+        if s is not None:
+            _link(links, vec, s)
+    return n
+
+
+def _dirt_layer(nodes, links, uv, base_col, rough_in):
+    """Mix dirt over a colour/roughness using the fm_dirt attribute and a breakup noise."""
+    dirt = _attr(nodes, -900, -500, DIRT_ATTR)
+    brk = _tex(nodes, links, "ShaderNodeTexNoise", -900, -700, uv, Scale=3.0, Detail=6.0, Roughness=0.6)
+    rng = nodes.new("ShaderNodeMapRange")
+    rng.location = (-650, -700)
+    _link(links, _sock(brk.outputs, "Fac", {'VALUE'}), _sock(rng.inputs, "Value", {'VALUE'}))
+    _setin(rng, "From Min", 0.3, {'VALUE'})
+    _setin(rng, "From Max", 0.7, {'VALUE'})
+    fac = _math(nodes, links, -400, -550, 'MULTIPLY', dirt, _sock(rng.outputs, "Result", {'VALUE'}))
+    fac = _math(nodes, links, -250, -550, 'MULTIPLY', fac, 1.8)
+    fac = _math(nodes, links, -100, -550, 'MINIMUM', fac, 1.0)
+    col = _mix_rgb(nodes, links, 150, -200, fac, base_col, _DIRT_COLOR)
+    rough = _math(nodes, links, 150, -450, 'ADD', rough_in, _math(nodes, links, 0, -450, 'MULTIPLY', fac, 0.12))
+    return col, rough
+
+
+
+
+
+
+def style_material(kind, style):
+    """Shared built-in material for a media ('MEDIA') or frame ('FRAME') style."""
+    # Filter Maker Pro only (removed from the Lite build)
+    return None
+
+
+def apply_styles(p):
+    """Point the material slots at the chosen built-in styles (Custom keeps the slot)."""
+    prev = _busy[0]
+    _busy[0] = True
+    try:
+        if getattr(p, "filter_style", 'CUSTOM') != 'CUSTOM':
+            m = style_material('MEDIA', p.filter_style)
+            if m is not None and p.filter_material != m:
+                p.filter_material = m
+        if getattr(p, "frame_style", 'CUSTOM') != 'CUSTOM':
+            m = style_material('FRAME', p.frame_style)
+            if m is not None and p.border_material != m:
+                p.border_material = m
+    finally:
+        _busy[0] = prev
+
+
 # ---- the pleated sheet, cached between updates ------------------------------
 
 LAST_TIMINGS = {}
@@ -2719,13 +3312,16 @@ def build_reference(rb, p, src):
 
 
 
-_LITE_OFF = (("use_hair", False), ("use_dust", False), ("use_boolean", False),
-             ("noise_strength", 0.0), ("border_profile", 'FLAT'), ("border_overhang", 0.0))
+_LITE_OFF = (("use_hair", False), ("use_dust", False),
+             ("noise_strength", 0.0), ("border_profile", 'FLAT'), ("border_overhang", 0.0),
+             ("border_caps", 'NONE'), ("filter_style", 'CUSTOM'), ("frame_style", 'CUSTOM'),
+             ("dirt", 0.0), ("grille_pattern", 'NONE'), ("use_wire", False), ("pull_tabs", 0),
+             ("use_print", False))
 
 
 def _lite_gate(p):
-    """Lite: turn off Pro-only settings (a filter made in Pro keeps its pleats and
-    border, without wear, hair, dust, border styles or boolean)."""
+    """Lite: turn off Pro-only settings (a filter made in Pro keeps its pleats, border
+    and boolean, without wear, hair, dust or border styles)."""
     prev = _busy[0]
     _busy[0] = True
     try:
@@ -2753,6 +3349,7 @@ def regenerate(obj):
         t_last = now
 
     try:
+        apply_styles(p)
         src = json.loads(p.src)
         bm = bmesh.new()
         tm["sheet_cached"] = _build_sheet(obj, p, src, bm)
@@ -2760,12 +3357,14 @@ def regenerate(obj):
         if not tm["sheet_cached"] and p.mode == 'FACE':
             tm.update({"face_" + k: round(v, 1) for k, v in _FACE_TIMINGS.items()})
         segs, W = None, 0.0
-        if p.use_border:
+        want_masks = p.dirt > 0.0          # the built-in materials read fm_dirt (absent = clean)
+        if p.use_border or want_masks:
             rb = bmesh.new()
             build_reference(rb, p, src)
             if len(rb.faces):
-                W = _border_dims(p, _rb_small(rb))[0]
-                segs = _outline_segments(rb, W * 0.05)
+                small = _rb_small(rb)
+                W = _border_dims(p, small)[0] if p.use_border else 0.0
+                segs = _outline_segments(rb, max(W, 0.01 * (small or 1.0)) * 0.05)
         tick("reference_ms")
         bm.normal_update()
         fade = dist = None
@@ -2777,13 +3376,21 @@ def regenerate(obj):
             else:
                 dist = _outline_distance([tuple(v.co) for v in bm.verts], segs)
                 _DIST_CACHE[obj.name_full] = (dkey, dist)
-            if p.noise_strength > 0:
+            if p.noise_strength > 0 and p.use_border:
                 ramp = max(W * 0.8, 1e-9)
                 fade = [_smoothstep(d / ramp) for d in dist]
         tick("distance_ms")
         apply_noise(bm, p, fade, cache_id=obj.name_full, sheet_key=_sheet_key(p))
         bm.normal_update()
+        if want_masks:
+            _write_masks(bm, p, dist, W)
         tick("noise_ms")
+        try:
+            update_wire(obj, p, bm)
+        except Exception as wire_exc:
+            traceback.print_exc()
+            p.last_error = "Wire mesh failed: %s" % wire_exc
+        tick("wire_ms")
         # bm.copy() keeps the vertex order, so the distances above still line up
         surface = bm.copy() if (p.use_hair or p.use_dust) else None
         if p.use_thickness and p.thickness > 1e-7 and bm.faces:
@@ -2803,7 +3410,7 @@ def regenerate(obj):
             _remove_child(p, "fuzz_obj")
         tick("cutter_ms")
         try:
-            update_particles(obj, p, surface, dist, W)
+            update_particles(obj, p, surface, dist if p.use_border else None, W)
         except Exception as particle_exc:
             traceback.print_exc()
             p.last_error = "Hair / dust update failed: %s" % particle_exc
@@ -2812,23 +3419,34 @@ def regenerate(obj):
             if surface is not None:
                 surface.free()
         tick("particles_ms")
-        if rb is not None and rb.faces:
+        if rb is not None and rb.faces and p.use_border:
             fb = build_border(p, rb)
             if fb is not None:
                 try:
                     apply_border_shading(fb, p)
-                    _write_child(obj, p, "border_obj", "_Border", fb, p.border_material)
+                    if want_masks:
+                        _set_frame_dirt(fb, p)
+                    bob = _write_child(obj, p, "border_obj", "_Border", fb, p.border_material)
+                    _apply_uv_space(bob.data, p)
                 finally:
                     fb.free()
             else:
                 _remove_child(p, "border_obj")
+            try:
+                _W, _O, _F, _B, _fit = _border_dims(p, _rb_small(rb))
+                update_print(obj, p, rb, _W, _O, _F, _B)
+            except Exception as print_exc:
+                traceback.print_exc()
+                p.last_error = "Printed graphics failed: %s" % print_exc
         else:
             _remove_child(p, "border_obj")
+            _remove_child(p, "print_obj")
         tick("border_ms")
         apply_shading(bm, p)
         me = obj.data
         me.clear_geometry()
         bm.to_mesh(me)
+        _apply_uv_space(me, p)
         me.materials.clear()
         if p.filter_material:
             me.materials.append(p.filter_material)
@@ -3107,6 +3725,66 @@ class FilterProps(PropertyGroup):
                                             subtype='ANGLE', unit='ROTATION', update=_upd)
     border_front: _len("Front Extend", 0.01, "Extra frame thickness on the front")
     border_back: _len("Back Extend", 0.01, "Extra frame thickness on the back")
+    border_caps: EnumProperty(name="End Caps", items=[
+        ('NONE', "None", "Open ends"),
+        ('BOTH', "Both", "Close both ends of a ring-shaped filter (cartridge)"),
+        ('BOTTOM', "Bottom", "Close the lower end only"),
+        ('TOP', "Top", "Close the upper end only")], default='NONE', update=_upd,
+        description="Plates across the ends of ring-shaped filters (cylinders, cones, box wraps)")
+    border_cap_hole: FloatProperty(name="Cap Hole", default=0.0, min=0.0, max=0.95, subtype='FACTOR',
+                                   update=_upd, description="Round hole in the middle of each end cap")
+
+    # Die-cut face, wire mesh, pull tabs and printed graphics
+    grille_pattern: EnumProperty(name="Face", items=GRILLE_PATTERNS, default='NONE', update=_upd,
+                                 description="Board face over the pleats with die-cut openings (needs the border)")
+    grille_side: EnumProperty(name="Face Side", items=[
+        ('FRONT', "Front", "Face on the front only"),
+        ('BACK', "Back", "Face on the back only"),
+        ('BOTH', "Both", "Face on both sides, like most furnace filters")], default='BOTH', update=_upd)
+    grille_cells: IntProperty(name="Openings Across", default=4, min=1, max=60, update=_upd,
+                              description="Number of openings across the shorter side")
+    grille_aspect: FloatProperty(name="Opening Shape", default=1.0, min=0.2, max=5.0, update=_upd,
+                                 description="Height / width of each opening")
+    grille_strut: FloatProperty(name="Strut Width", default=0.14, min=0.02, max=0.8, subtype='FACTOR',
+                                update=_upd, description="Width of the board strips between openings "
+                                "(share of the opening size)")
+    grille_chamfer: FloatProperty(name="Corner Cut", default=0.15, min=0.0, max=0.95, subtype='FACTOR',
+                                  update=_upd, description="Cut the pointed corners of the diamond openings")
+    board_thickness: _len("Board Thickness", 0.0015, "Thickness of the die-cut face and pull tabs", 0.00001)
+    use_wire: BoolProperty(name="Wire Mesh", default=False, update=_upd,
+                           description="Wire support mesh pleated together with the media")
+    wire_pattern: EnumProperty(name="Wire Pattern", items=WIRE_PATTERNS, default='DIAMOND', update=_upd)
+    wire_spacing: _len("Wire Spacing", 0.03, "Distance between neighbouring wires, measured along the media",
+                       0.0005)
+    wire_angle: FloatProperty(name="Wire Angle", default=math.radians(50.0), min=math.radians(5.0),
+                              max=math.radians(85.0), subtype='ANGLE', update=_upd,
+                              description="Angle of the diagonal wires against the pleat ridges")
+    wire_radius: _len("Wire Radius", 0.0006, "Radius of the wire", 0.00001)
+    wire_side: EnumProperty(name="Wire Side", items=[
+        ('FRONT', "Front", "Wire on the front of the media"),
+        ('BACK', "Back", "Wire on the back of the media")], default='FRONT', update=_upd)
+    pull_tabs: IntProperty(name="Pull Tabs", default=0, min=0, max=2, update=_upd,
+                           description="Board tabs sticking out of the frame for pulling the filter out")
+    tab_width: _len("Tab Width", 0.04, "Width of each pull tab", 0.001)
+    tab_length: _len("Tab Length", 0.02, "How far each pull tab sticks out of the frame", 0.001)
+    tab_position: FloatProperty(name="Tab Position", default=0.5, min=0.05, max=0.95, subtype='FACTOR',
+                                update=_upd, description="Where along the side the tab sits")
+    use_print: BoolProperty(name="Printed Graphics", default=False, update=_upd,
+                            description="Size label, airflow text and arrow printed on the frame sides")
+    print_label: StringProperty(name="Size Label", default="", update=_upd,
+                                description="Text of the size label (empty: nominal size in inches)")
+    print_text: StringProperty(name="Text", default="AIR FLOW", update=_upd,
+                               description="Text printed next to the airflow arrow")
+    print_place: EnumProperty(name="Print On", items=[
+        ('SIDES', "Sides", "Label, text and airflow arrow on the outer sides of the frame"),
+        ('FRONT', "Front", "Label and text on the front face of the frame"),
+        ('BOTH', "Sides & Front", "Print on the sides and on the front face")], default='SIDES', update=_upd)
+    print_front_text: StringProperty(name="Front Text", default="", update=_upd,
+                                     description="Text on the front face (empty: the size label and text)")
+    print_flow: EnumProperty(name="Airflow", items=[
+        ('TO_BACK', "Front to Back", "The arrow points from the front to the back"),
+        ('TO_FRONT', "Back to Front", "The arrow points from the back to the front")], default='TO_BACK',
+        update=_upd)
 
     # Hair
     use_hair: BoolProperty(name="Hair", default=False, update=_upd,
@@ -3124,7 +3802,8 @@ class FilterProps(PropertyGroup):
                              subtype='ANGLE', unit='ROTATION', update=_upd_scatter,
                              description="Strands lie on the filter; this is the most they lift off it")
     hair_variants: IntProperty(name="Strand Shapes", default=8, min=1, max=32, update=_upd_shared_hair,
-                               description="Number of different strand curves in the shared hair collection")
+                               description="Strand shapes this filter uses. The shared collection holds the most "
+                                           "any filter asks for; this filter picks from the first ones")
     hair_seed: IntProperty(name="Seed", default=0, min=0, update=_upd_scatter,
                            description="Placement of the strands on this filter")
 
@@ -3142,7 +3821,8 @@ class FilterProps(PropertyGroup):
                              default={'FLAKE', 'CLUMP', 'GRIT', 'LINT'}, update=_upd_shared_dust,
                              description="Which kinds of dust pieces are in the shared dust collection")
     dust_variants: IntProperty(name="Piece Variants", default=10, min=1, max=32, update=_upd_shared_dust,
-                               description="Number of different pieces in the shared dust collection")
+                               description="Dust pieces this filter uses. The shared collection holds the most "
+                                           "any filter asks for; this filter picks from the first ones")
 
     # Shared particle emitter
     hair_border_falloff: _len("Border Falloff", 0.05, "Distance over which hair fades in after the "
@@ -3182,6 +3862,36 @@ class FilterProps(PropertyGroup):
                                  subtype='DISTANCE', unit='LENGTH', precision=4, update=_upd_bool)
     show_cutter: BoolProperty(name="Show Cutter", default=False, update=_upd_cutter_vis)
 
+    # Game-ready export
+    game_lod: EnumProperty(name="Low Poly", items=[
+        ('PLEATED', "Low-Poly Pleats", "Keeps the zig-zag silhouette with few polygons; bevels, wear, hair and dust go into the maps"),
+        ('FLAT', "Flat Card", "A flat panel and frame; all pleat detail goes into the normal map")], default='PLEATED')
+    game_resolution: EnumProperty(name="Texture Size", items=[
+        ('512', "512", ""), ('1024', "1024", ""), ('2048', "2048", ""), ('4096', "4096", "")], default='1024')
+    game_maps: EnumProperty(name="Maps", items=GAME_MAPS, options={'ENUM_FLAG'},
+                            default={'NORMAL', 'AO', 'COLOR'})
+    game_particles: BoolProperty(name="Include Hair & Dust", default=True,
+                                 description="Bake the hair and dust into the maps")
+    game_export: EnumProperty(name="Export", items=[
+        ('NONE', "Don't Export", "Only create the low-poly object and maps"),
+        ('FBX', "FBX", "Export the low-poly object with embedded textures"),
+        ('GLB', "glTF (.glb)", "Export the low-poly object as a binary glTF")], default='NONE')
+    game_path: StringProperty(name="Export Path", subtype='FILE_PATH', default="",
+                              description="File or folder for the export (empty: next to the .blend)")
+
+    # Built-in materials, dirt and UVs
+    filter_style: EnumProperty(name="Media", items=FILTER_STYLES, default='CUSTOM', update=_upd,
+                               description="Built-in material for the filter media")
+    frame_style: EnumProperty(name="Frame", items=FRAME_STYLES, default='CUSTOM', update=_upd,
+                              description="Built-in material for the border frame")
+    dirt: FloatProperty(name="Dirt", default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=_upd,
+                        description="Dirt build-up for the built-in materials: heaviest in the middle "
+                                    "and in the folds, clean under the frame")
+    uv_mode: EnumProperty(name="UVs", items=[
+        ('WORLD', "Real-World Size", "Textures tile at the same size on every filter, fold and frame"),
+        ('FIT', "Fit 0-1", "Each part is scaled into the 0-1 UV square")], default='WORLD', update=_upd)
+    uv_tile: _len("Texture Size", 0.1, "Real-world size of one texture tile (Real-World Size UVs)", 0.0001)
+
     # Materials / generated children
     filter_material: PointerProperty(name="Filter Material", type=bpy.types.Material, update=_upd)
     border_material: PointerProperty(name="Border Material", type=bpy.types.Material, update=_upd)
@@ -3197,6 +3907,8 @@ class FilterProps(PropertyGroup):
     border_obj: PointerProperty(type=bpy.types.Object)
     cutter_obj: PointerProperty(type=bpy.types.Object)
     fuzz_obj: PointerProperty(type=bpy.types.Object)
+    wire_obj: PointerProperty(type=bpy.types.Object)
+    print_obj: PointerProperty(type=bpy.types.Object)
 
 
 # ---------------------------------------------------------------------------
@@ -3206,7 +3918,8 @@ class FilterProps(PropertyGroup):
 PRESET_SUBDIR = "filter_maker_pro"
 LEN_PROPS = {"thickness", "pleat_depth", "height", "noise_strength", "noise_scale", "border_width",
              "border_overhang", "border_bevel", "border_front", "border_back", "hair_length",
-             "hair_width", "dust_size", "cutter_margin", "hair_border_falloff", "dust_border_falloff"}
+             "hair_width", "dust_size", "cutter_margin", "hair_border_falloff", "dust_border_falloff",
+             "board_thickness", "wire_spacing", "wire_radius", "tab_width", "tab_length"}
 INV_LEN = {"pleat_density", "detail"}
 INV_AREA = {"hair_density", "dust_density"}
 VEC_PROPS = {"height_dir"}
@@ -3232,6 +3945,13 @@ DEFAULTS_NORM = {
     "hair_border_falloff": 0.05, "dust_border_falloff": 0.05,
     "use_boolean": False, "boolean_source": "ENVELOPE", "boolean_op": "DIFFERENCE", "boolean_solver": "EXACT",
     "cutter_margin": 0.0,
+    "filter_style": "PAPER", "frame_style": "PAINTED", "dirt": 0.0,
+    "grille_pattern": "NONE", "grille_side": "BOTH", "grille_cells": 4, "grille_aspect": 1.0,
+    "grille_strut": 0.14, "grille_chamfer": 0.15, "board_thickness": 0.0015,
+    "use_wire": False, "wire_pattern": "DIAMOND", "wire_spacing": 0.03, "wire_angle": math.radians(50.0),
+    "wire_radius": 0.0006, "wire_side": "FRONT",
+    "pull_tabs": 0, "tab_width": 0.04, "tab_length": 0.02, "tab_position": 0.5,
+    "use_print": False, "print_flow": "TO_BACK", "print_place": "SIDES",
 }
 PRESET_KEYS = tuple(DEFAULTS_NORM)
 
@@ -3246,18 +3966,33 @@ BUILTIN_PRESETS = {
     "Standard Pleated": _mk(pleat_density=55.0, pleat_depth=0.025, noise_strength=0.0015,
                              noise_scale=0.25, noise_depth=1),
     "Clean (no wear)": _mk(pleat_density=55.0, noise_strength=0.0, use_hair=False, use_dust=False),
-    "HEPA Fine Pleat": _mk(pleat_density=80.0, pleat_depth=0.018, use_thickness=False, thickness=0.0,
+    "HEPA Fine Pleat": _mk(filter_style="HEPA", frame_style="ALUMINIUM",
+                           pleat_density=80.0, pleat_depth=0.018, use_thickness=False, thickness=0.0,
                            bevel_ridge=0.25, bevel_valley=0.25, bevel_cuts=3,
                            noise_strength=0.0008, noise_scale=0.3, noise_depth=1, use_hair=False,
                            use_dust=False),
-    "Coarse Furnace": _mk(pleat_density=38.0, pleat_depth=0.035, use_thickness=False, thickness=0.0,
+    "Coarse Furnace": _mk(filter_style="FIBERGLASS", frame_style="CARDBOARD",
+                          pleat_density=38.0, pleat_depth=0.035, use_thickness=False, thickness=0.0,
                           bevel_ridge=0.55, bevel_valley=0.45, bevel_cuts=4,
                           noise_strength=0.0025, noise_scale=0.35, noise_depth=1,
                           use_hair=False, use_dust=False),
     "Sharp Paper Fold": _mk(pleat_density=60.0, bevel_ridge=0.0, bevel_valley=0.0, bevel_cuts=1,
                             use_thickness=False, thickness=0.0, noise_strength=0.0005,
                             use_hair=False, use_dust=False),
-    "Dusty Used": _mk(pleat_density=55.0, pleat_depth=0.025, noise_strength=0.003,
+    "Die-Cut Furnace": _mk(filter_style="HEPA", frame_style="WHITE_BOARD",
+                           pleat_density=28.0, pleat_depth=0.012, use_thickness=False, thickness=0.0,
+                           bevel_ridge=0.45, bevel_valley=0.35, bevel_cuts=3,
+                           noise_strength=0.0006, noise_scale=0.3, noise_depth=1,
+                           use_border=True, border_width=0.035, border_profile="FLAT", border_fit=True,
+                           border_front=0.002, border_back=0.002,
+                           grille_pattern="DIAMOND", grille_side="BOTH", grille_cells=3, grille_aspect=1.0,
+                           grille_strut=0.14, grille_chamfer=0.15, board_thickness=0.0025,
+                           use_wire=True, wire_pattern="DIAMOND", wire_spacing=0.05,
+                           wire_angle=math.radians(50.0), wire_radius=0.0009, wire_side="FRONT",
+                           pull_tabs=1, tab_width=0.07, tab_length=0.03, use_print=True,
+                           use_hair=False, use_dust=False),
+    "Dusty Used": _mk(frame_style="GALVANIZED", dirt=0.6,
+                      pleat_density=55.0, pleat_depth=0.025, noise_strength=0.003,
                       noise_scale=0.3, noise_depth=1, use_hair=True, use_dust=True,
                       hair_density=2000.0, hair_length=0.015, hair_randomness=0.25,
                       hair_curl=0.12, dust_density=8000.0, dust_size=0.003,
@@ -3525,6 +4260,57 @@ class FILTER_OT_from_selection(Operator):
         if new.filter_maker.last_error:
             self.report({'ERROR'}, new.filter_maker.last_error)
         return {'FINISHED'}
+
+
+FILTER_SHAPES = (
+    ('PANEL', "Panel", "Rectangular panel filter in a frame"),
+    ('ROUND', "Round Panel", "Circular panel filter with a round frame"),
+    ('CARTRIDGE', "Cartridge", "Cylindrical cartridge with end caps"),
+    ('VBANK', "V-Bank", "Media folded into V shapes inside one frame"),
+    ('BOX', "Box Wrap", "Pleats running around four sides of a box"),
+    ('FURNACE', "Die-Cut Furnace", "16 x 25 x 1 in furnace filter: white board face with diamond "
+                                    "openings, wire mesh, pull tab and printed airflow label"),
+)
+
+
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# Game-ready workflow: low-poly copy, packed UVs, baked maps, optional export
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+def _cycles_gpu_ready():
+    """True when the user has a Cycles GPU device switched on in the preferences."""
+    try:
+        cp = bpy.context.preferences.addons["cycles"].preferences
+        if getattr(cp, "compute_device_type", 'NONE') in {'NONE', ''}:
+            return False
+        try:
+            cp.refresh_devices()
+        except Exception:
+            pass
+        return any(d.use and d.type != 'CPU' for d in cp.devices)
+    except Exception:
+        return False
+
+
+
+
 
 
 class FILTER_OT_edit_source_curve(Operator):
@@ -3833,7 +4619,7 @@ def _counts(ob):
 
 
 class FILTER_PT_main(Panel):
-    bl_label = "Filter Maker Lite  0.6.6"
+    bl_label = "Filter Maker Lite  0.7.0"
     bl_idname = "FILTER_PT_main"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -4054,6 +4840,8 @@ class FILTER_PT_border(FILTER_SubPanel, Panel):
         row.prop(p, "border_auto_smooth_angle")
 
 
+
+
 class FILTER_PT_hair(FILTER_SubPanel, Panel):
     header_art = "hair"
     header_icon = "STRANDS"
@@ -4075,13 +4863,15 @@ class FILTER_PT_hair(FILTER_SubPanel, Panel):
             return
         self.layout.active = p.use_hair
         c = self.layout.column(align=True)
-        for prop in ("hair_density", "hair_length", "hair_length_var", "hair_width", "hair_lift", "hair_seed"):
+        for prop in ("hair_density", "hair_length", "hair_length_var", "hair_width", "hair_lift", "hair_seed",
+                     "hair_variants"):
             c.prop(p, prop)
         box = self.layout.box()
         box.label(text="Strand shape (shared by all filters)", icon=ic('LINKED'))
         sc = box.column(align=True)
-        for prop in ("hair_curl", "hair_variants"):
-            sc.prop(p, prop)
+        sc.prop(p, "hair_curl")
+        if p.hair_lib is not None:
+            sc.label(text="Shared set: %d strands" % len(p.hair_lib.objects))
         _particle_footer(self.layout, p, p.hair_lib, p.hair_count, "strands", "hair")
 
 
@@ -4106,11 +4896,12 @@ class FILTER_PT_dust(FILTER_SubPanel, Panel):
             return
         self.layout.active = p.use_dust
         c = self.layout.column(align=True)
-        for prop in ("dust_density", "dust_size", "dust_size_var", "dust_tilt", "dust_seed"):
+        for prop in ("dust_density", "dust_size", "dust_size_var", "dust_tilt", "dust_seed", "dust_variants"):
             c.prop(p, prop)
         box = self.layout.box()
         box.label(text="Dust pieces (shared by all filters)", icon=ic('LINKED'))
-        box.prop(p, "dust_variants")
+        if p.dust_lib is not None:
+            box.label(text="Shared set: %d pieces" % len(p.dust_lib.objects))
         row = box.row(align=True)
         row.prop(p, "dust_types", expand=True)
         _particle_footer(self.layout, p, p.dust_lib, p.dust_count, "pieces", "dust")
@@ -4172,9 +4963,15 @@ class FILTER_PT_materials(FILTER_SubPanel, Panel):
         if p is None:
             return
         layout = self.layout
-        layout.template_ID(p, "filter_material", new="material.new")
+        col = layout.column(align=True)
+        col.template_ID(p, "filter_material", new="material.new")
         if p.use_border:
-            layout.template_ID(p, "border_material", new="material.new")
+            col.template_ID(p, "border_material", new="material.new")
+        col.separator()
+        col.prop(p, "uv_mode")
+        sub = col.row(align=True)
+        sub.active = p.uv_mode == 'WORLD'
+        sub.prop(p, "uv_tile")
         if p.use_hair:
             layout.template_ID(p, "hair_material", new="material.new")
         if p.use_dust:
@@ -4182,6 +4979,8 @@ class FILTER_PT_materials(FILTER_SubPanel, Panel):
         if p.use_hair or p.use_dust:
             if p.use_dust:
                 layout.label(text="The dust material is shared by all filters", icon=ic('LINKED'))
+
+
 
 
 class FILTER_PT_actions(FILTER_SubPanel, Panel):
@@ -4622,7 +5421,7 @@ def _particle_footer(layout, p, coll, count, noun, kind):
 # Robust registration / reload cleanup
 # ---------------------------------------------------------------------------
 
-classes = (FilterProps, FILTER_OT_new_line, FILTER_OT_from_selection, FILTER_OT_edit_source_curve, FILTER_OT_regenerate, FILTER_OT_finish, FILTER_OT_delete, FILTER_PT_main, FILTER_PT_pleats, FILTER_PT_bevel, FILTER_PT_shading, FILTER_PT_border, FILTER_PT_materials, FILTER_PT_actions)
+classes = (FilterProps, FILTER_OT_new_line, FILTER_OT_from_selection, FILTER_OT_edit_source_curve, FILTER_OT_regenerate, FILTER_OT_use_reference, FILTER_OT_finish, FILTER_OT_delete, FILTER_PT_main, FILTER_PT_pleats, FILTER_PT_bevel, FILTER_PT_shading, FILTER_PT_border, FILTER_PT_boolean, FILTER_PT_materials, FILTER_PT_actions)
 
 
 def _teardown():
