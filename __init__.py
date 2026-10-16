@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Filter Maker Lite",
     "author": "Tooboi",
-    "version": (0, 7, 0),
+    "version": (0, 7, 1),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar (N) > Filter Maker",
     "description": "Free pleated filter generator: line, curve, edge and face sources, pleat shaping, a clean border and the Boolean tool.",
@@ -2995,7 +2995,7 @@ def _counts(ob):
 
 
 class FILTER_PT_main(Panel):
-    bl_label = "Filter Maker Lite  0.7.0"
+    bl_label = "Filter Maker Lite  0.7.1"
     bl_idname = "FILTER_PT_main"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'

@@ -1,4 +1,4 @@
-# Blender Extensions listing: Filter Maker Lite 0.7.0
+# Blender Extensions listing: Filter Maker Lite 0.7.1
 
 **Name:** Filter Maker Lite
 **Tagline (max 64 chars):** Free pleated filter generator for lines, curves and faces
@@ -29,7 +29,7 @@ The Boolean tool cuts the source mesh with a box, an envelope of the pleated for
 
 Sliders rebuild the filter as you drag. Curve sources stay editable: click **Edit**, reshape the curve, then **Apply Curve Edit**. **Finish (Bake)** turns the filter into regular objects.
 
-## What's new in 0.7.0
+## What's new in 0.7.1
 - Boolean tool: cut the source mesh so the filter sits in its housing.
 - UVs unrolled across the folds.
 - Apply Curve Edit: reshape a curve source, then rebuild the filter with one click.

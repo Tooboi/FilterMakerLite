@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.7.0]
+## [0.7.1]
 
 ### Added
 - **Boolean tool.** Cut the source mesh with a bounding box, an envelope of the pleated form or any object, so the filter sits in its housing. Applied when you click Finish (Bake).
