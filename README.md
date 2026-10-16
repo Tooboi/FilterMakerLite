@@ -14,7 +14,7 @@
 
 <p align="center">
   <b>Make pleated air filters in Blender from a line, a curve, mesh edges or faces.</b><br>
-  Free, no node setup, everything in the N-panel. The free edition of <a href="https://github.com/Tooboi/FilterMakerPro">Filter Maker Pro</a>.
+  Free, no node setup, everything in the N-panel.
 </p>
 
 ---
@@ -30,7 +30,7 @@
 - **A clean border:** a flat frame with the width you choose, sealed so the pleat ends never poke through.
 - **Boolean tool:** cut the source mesh with a box, an envelope of the pleated form or any object, so the filter sits in its housing. Applied when you finish.
 - **Real UVs:** the pleated sheet is unrolled across the folds, so textures keep their size on every flank and on the frame.
-- **Live editing:** change a slider and the filter rebuilds; curve sources stay editable.
+- **Live editing:** change a slider and the filter rebuilds. Curve sources stay editable: reshape the curve, then click **Apply Curve Edit**.
 
 <table>
   <tr>
@@ -51,27 +51,6 @@
   </tr>
 </table>
 
-## Lite vs Pro
-
-| | Lite (free) | [Pro](https://github.com/Tooboi/FilterMakerPro) |
-|---|:---:|:---:|
-| Line, curve, edge and face sources | ✅ | ✅ |
-| Pleat density, depth, angle, thickness | ✅ | ✅ |
-| Pleat bevel, quads / tris, shading | ✅ | ✅ |
-| Flat border | ✅ | ✅ |
-| Boolean tool (cut the source mesh) | ✅ | ✅ |
-| UVs unrolled across the folds | ✅ | ✅ |
-| Border profiles (Chamfer, Round, Lip), overhang, front / back, end caps | | ✅ |
-| Ready-made shapes (cartridge, V-bank, box wrap, die-cut furnace…) | | ✅ |
-| Die-cut board face, wire mesh, pull tabs, printed labels | | ✅ |
-| Built-in materials and dirt | | ✅ |
-| Wear (Clouds displace) | | ✅ |
-| Hair & dust | | ✅ |
-| Game-ready low poly, baked maps, FBX / glTF export | | ✅ |
-| Presets (built-in and your own) | | ✅ |
-
-Filters you make in Lite open in Pro with every setting intact, so you can upgrade at any time without redoing your work. Only one edition can be enabled at a time: disable Lite before enabling Pro.
-
 ## 📦 Installation
 
 **Requires Blender 4.2 LTS or newer** (tested on 5.2 LTS).
@@ -89,7 +68,7 @@ Filters you make in Lite open in Pro with every setting intact, so you can upgra
 
 | I want… | Do this |
 |---|---|
-| A flat strip / quick test | Click **New Filter Line**. Click **Edit** next to *Live curve guide* to reshape it. |
+| A flat strip / quick test | Click **New Filter Line**. Click **Edit** next to *Curve guide* to reshape the curve, then **Apply Curve Edit** to rebuild the filter. |
 | A filter along a path or ring | Select a curve → **From Curve / Edges**. Set **Height** and **Height Direction**. |
 | A filter that fills a shape | Select a mesh, go to Edit Mode, select faces → **From Faces**. |
 | A filter from a wire outline | Select mesh edges in Edit Mode → **From Curve / Edges**. |
@@ -102,7 +81,7 @@ Then work down the panel: **Pleats → Pleat Bevel → Shading → Border → Bo
 
 ## About this repository
 
-This add-on is generated from the Filter Maker Pro source by `tools/build_lite.py` in the [Pro repository](https://github.com/Tooboi/FilterMakerPro), so both editions share the same core and get the same fixes. Please report bugs in the [issues](https://github.com/Tooboi/FilterMakerLite/issues) here.
+Please report bugs and ideas in the [issues](https://github.com/Tooboi/FilterMakerLite/issues).
 
 ## 📄 License
 
